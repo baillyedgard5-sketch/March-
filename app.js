@@ -17,7 +17,6 @@ function icon(c) { var m = CATS.filter(function (x) { return x[0] === c; })[0]; 
 function toast(t) { var e = document.getElementById('toast'); e.textContent = t; e.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(function () { e.classList.remove('on'); }, 1500); }
 function persist() { try { localStorage.setItem('cart', JSON.stringify(cart)); } catch (e) {} }
 // Charger le panier depuis le localStorage au démarrage
-let cart = JSON.parse(localStorage.getItem('cart')) || [];
 
 // Fonction pour sauvegarder le panier dans le localStorage
 function saveCart() {
