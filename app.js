@@ -413,6 +413,12 @@ async function linkOrders() {
   }
   saveMy();
 }
+async function enablePush() {
+  if (!pushSupported()) return alert("Les notifications ne sont pas disponibles ici. Sur iPhone, ajoute d'abord l'application à l'écran d'accueil.");
+  var perm = await Notification.requestPermission();
+  if (perm !== 'granted') return alert("Notifications refusées. Tu peux les autoriser dans les réglages du navigateur (paramètres du site).");
+  try {
+    var reg = await navigator.serviceWorker.ready;
     var sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(VAPID_PUBLIC) }));
     pushSub = sub.toJSON(); await linkOrders(); toast('Notifications activées ✅'); draw(true);
   } catch (e) { alert("Activation impossible : " + e.message); }
