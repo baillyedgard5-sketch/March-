@@ -16,6 +16,17 @@ function fmt(n) { return Number(n).toLocaleString('fr-FR') + ' ' + D.devise; }
 function icon(c) { var m = CATS.filter(function (x) { return x[0] === c; })[0]; return m ? m[1] : '🛍️'; }
 function toast(t) { var e = document.getElementById('toast'); e.textContent = t; e.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(function () { e.classList.remove('on'); }, 1500); }
 function persist() { try { localStorage.setItem('cart', JSON.stringify(cart)); } catch (e) {} }
+// Charger le panier depuis le localStorage au démarrage
+let cart = JSON.parse(localStorage.getItem('cart')) || [];
+
+// Fonction pour sauvegarder le panier dans le localStorage
+function saveCart() {
+  localStorage.setItem('cart', JSON.stringify(cart));
+}
+
+// Appelez saveCart() à chaque fois que vous ajoutez, 
+// modifiez ou supprimez un élément du panier.
+
 function cnt() { var n = 0; for (var k in cart) n += cart[k]; return n; }
 function total() { var t = 0; D.produits.forEach(function (p) { t += (cart[p.id] || 0) * p.prix; }); return t; }
 function go(v, c) { S.v = v; S.cat = c || null; window.scrollTo(0, 0); draw(); }
