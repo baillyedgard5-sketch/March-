@@ -86,11 +86,52 @@ function sec(title, list, c) {
 function catTile(c, dark) {
   var b = h('button', 'ct' + (c[2] ? ' img' : (dark ? ' d' : '')));
   var v;
-  if (c[2]) { v = h('div', 'cimg'); var i = h('img'); i.src = c[2]; i.alt = ''; i.loading = 'lazy'; v.appendChild(i); } else v = h('span', null, c[1]);
+
+  if (c[2]) {
+    v = h('div', 'cimg');
+
+    v.style.width = '100%';
+    v.style.height = '110px';
+    v.style.maxWidth = '100%';
+    v.style.overflow = 'hidden';
+    v.style.display = 'flex';
+    v.style.alignItems = 'center';
+    v.style.justifyContent = 'center';
+    v.style.boxSizing = 'border-box';
+
+    var i = h('img');
+    i.src = c[2];
+    i.alt = '';
+    i.loading = 'lazy';
+
+    i.style.display = 'block';
+    i.style.width = '100%';
+    i.style.height = '100%';
+    i.style.maxWidth = '100%';
+    i.style.maxHeight = '100%';
+    i.style.objectFit = 'cover';
+    i.style.objectPosition = 'center';
+    i.style.boxSizing = 'border-box';
+
+    v.appendChild(i);
+  } else {
+    v = h('span', null, c[1]);
+  }
+
+  b.style.width = '100%';
+  b.style.maxWidth = '100%';
+  b.style.minWidth = '0';
+  b.style.overflow = 'hidden';
+  b.style.boxSizing = 'border-box';
+
   b.append(v, h('span', 'cn', c[0]));
-  b.onclick = function () { go('list', c[0]); }; return b;
+
+  b.onclick = function () {
+    go('list', c[0]);
+  };
+
+  return b;
 }
-function navbar(title, back) { var n = h('div', 'nav'), b = h('button', 'back', '←'); b.setAttribute('aria-label', 'Retour'); b.onclick = function () { go(back || 'home'); }; n.append(b, h('h1', null, title)); return n; }
 
 /* ---------- Écrans ---------- */
 function home() {
