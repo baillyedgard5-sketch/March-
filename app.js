@@ -84,7 +84,10 @@ function sec(title, list, c) {
   w.append(r, car); return w;
 }
 function catTile(c, dark) {
-  var b = h('button', 'ct' + (dark ? ' d' : '')); b.append(h('span', null, c[1]), h('span', null, c[0])); b.lastChild.style.fontSize = '1rem';
+  var b = h('button', 'ct' + (c[2] ? ' img' : (dark ? ' d' : '')));
+  var v;
+  if (c[2]) { v = h('div', 'cimg'); var i = h('img'); i.src = c[2]; i.alt = ''; i.loading = 'lazy'; v.appendChild(i); } else v = h('span', null, c[1]);
+  b.append(v, h('span', 'cn', c[0]));
   b.onclick = function () { go('list', c[0]); }; return b;
 }
 function navbar(title, back) { var n = h('div', 'nav'), b = h('button', 'back', '←'); b.setAttribute('aria-label', 'Retour'); b.onclick = function () { go(back || 'home'); }; n.append(b, h('h1', null, title)); return n; }
@@ -152,7 +155,7 @@ async function load() {
   var p = await sb.from('products').select('*').order('created_at', { ascending: false });
   var s = await sb.from('settings').select('*');
   var c = await sb.from('categories').select('*').order('created_at');
-  if (!c.error && c.data.length) CATS = c.data.map(function (r) { return [r.nom, r.emoji || '🛍️']; });
+  if (!c.error && c.data.length) CATS = c.data.map(function (r) { return [r.nom, r.emoji || '🛍️', r.image_url || '']; });
   if (!p.error) D.produits = p.data.map(function (r) {
     var im = r.images && r.images.length ? r.images : (r.image_url ? [r.image_url] : []);
     return { out: !!r.epuise, id: r.id, nom: r.nom, prix: Number(r.prix), old: r.old_prix ? Number(r.old_prix) : 0, cat: r.categorie, desc: r.description, images: im };
@@ -171,9 +174,21 @@ async function addProduct(f) {
   if (r.error || !r.data.length) return alert("Ajout refusé : " + (r.error ? r.error.message : "vérifie que tu es connecté avec le compte vendeur."));
   toast('Produit ajouté'); load();
 }
-async function addCat(nom, emoji) {
+async function catUpload(blob) {
+  var path = 'cat-' + Date.now() + '.jpg', u = await sb.storage.from('produits').upload(path, blob, { contentType: 'image/jpeg' });
+  if (u.error) { alert('Image refusée : ' + u.error.message); return null; }
+  return sb.storage.from('produits').getPublicUrl(path).data.publicUrl;
+}
+async function setCatImage(c, blob) {
+  var url = await catUpload(blob); if (!url) return;
+  var r = await sb.from('categories').update({ image_url: url }).eq('nom', c[0]).select();
+  if (r.error || !r.data.length) return alert('Modification refusée : ' + (r.error ? r.error.message : 'compte vendeur requis.'));
+  toast('Image mise à jour ✅'); load();
+}
+async function addCat(nom, blob) {
   if (!nom.trim()) return alert('Écris le nom de la catégorie.');
-  var r = await sb.from('categories').insert({ nom: nom.trim(), emoji: (emoji || '').trim() || '🛍️' }).select();
+  var url = null; if (blob) { url = await catUpload(blob); if (!url) return; }
+  var r = await sb.from('categories').insert({ nom: nom.trim(), emoji: '🛍️', image_url: url }).select();
   if (r.error || !r.data.length) return alert('Ajout refusé : ' + (r.error ? r.error.message : 'compte vendeur requis.'));
   toast('Catégorie ajoutée'); load();
 }
@@ -280,7 +295,7 @@ function checkout() {
   if (waveAvailable()) opts.push(['wave', '🌊', 'Payer par Wave', 'Tu confirmes la commande, puis un lien t\'ouvre Wave pour payer.']);
   opts.push(['especes', '💵', 'Payer en espèces à la livraison', 'Tu paies au livreur quand tu reçois ta commande.']);
   if (!C.pay || (C.pay === 'wave' && !waveAvailable())) C.pay = opts[0][0];
-  opts.forEach(function (o) { var x = h('button'); x.type = 'button'; x.setAttribute('aria-pressed', String(C.pay === o[0])); x.append(h('span', null, o[1]), h('span', null, o[2])); x.onclick = function () { C.pay = o[0]; draw(true); }; py.appendChild(x); });
+  opts.forEach(function (o) { var x = h('button'); x.type = 'button'; x.setAttribute('aria-pressed', String(C.pay === o[0])); x.append(o[0] === 'wave' ? h('span', 'wvb', 'Wave') : h('span', null, o[1]), h('span', null, o[2])); x.onclick = function () { C.pay = o[0]; draw(true); }; py.appendChild(x); });
   pp.append(h('b', null, 'Mode de paiement'), py); R.appendChild(pp);
   R.appendChild(totalsBox());
   var o = h('button', 'fab', 'Confirmer la commande · ' + fmt(total())); o.onclick = submitOrder; R.appendChild(o);
@@ -311,10 +326,17 @@ function me() {
     b.onclick = function () { S.tab = x[0]; if (x[0] === 'commandes') loadOrders(); else draw(); }; seg.appendChild(b);
   }); R.appendChild(seg);
   if (S.tab === 'produits') {
-    var K = { nom: '', emo: '' }, kp = h('div', 'panel'), kb = h('button', 'go', 'Ajouter la catégorie');
-    kb.onclick = function () { addCat(K.nom, K.emo); };
-    kp.append(h('b', null, 'Nouvelle catégorie'), field('Nom (ex : Boissons)', '', function (v) { K.nom = v; }), field('Emoji (ex : 🥤)', '', function (v) { K.emo = v; }), kb);
-    CATS.forEach(function (c) { var r = h('div', 'brow'), x = h('button', 'pill', 'Supprimer'); x.onclick = function () { delCat(c); }; r.append(h('span', null, c[1] + ' ' + c[0]), x); kp.appendChild(r); });
+    var K = { nom: '', blob: null }, kp = h('div', 'panel'), kb = h('button', 'go', 'Ajouter la catégorie'), ki = h('input');
+    ki.type = 'file'; ki.accept = 'image/*'; ki.onchange = function () { K.blob = null; if (ki.files[0]) shrink(ki.files[0], function (bl) { K.blob = bl; }); };
+    kb.onclick = function () { addCat(K.nom, K.blob); };
+    kp.append(h('b', null, 'Nouvelle catégorie'), field('Nom (ex : Boissons)', '', function (v) { K.nom = v; }), h('span', 'pd', "Image de la catégorie (choisis une photo dans ta galerie)"), ki, kb);
+    CATS.forEach(function (c) {
+      var r = h('div', 'crow'), th = h('div', 'cthumb'), x = h('button', 'pill', 'Supprimer'), ch = h('label', 'pill', c[2] ? "Changer l'image" : 'Ajouter une image'), fi = h('input');
+      if (c[2]) { var im = h('img'); im.src = c[2]; im.alt = ''; th.appendChild(im); } else th.textContent = c[1];
+      fi.type = 'file'; fi.accept = 'image/*'; fi.hidden = true; fi.onchange = function () { if (fi.files[0]) shrink(fi.files[0], function (bl) { setCatImage(c, bl); }); };
+      ch.appendChild(fi); x.onclick = function () { delCat(c); };
+      r.append(th, h('span', 'cname', c[0]), ch, x); kp.appendChild(r);
+    });
     R.appendChild(kp);
     var F = { nom: '', prix: '', old: '', cat: CATS[0] ? CATS[0][0] : '', desc: '', blobs: [] }, f = h('div', 'panel'), cs = h('select'), ph = h('input'), ad = h('button', 'go', 'Ajouter le produit');
     CATS.forEach(function (c) { cs.appendChild(h('option', null, c[0])); }); cs.onchange = function () { F.cat = cs.value; };
@@ -342,9 +364,9 @@ function me() {
       var tel = h('a', null, '📞 Appeler'); tel.href = 'tel:' + o.client_tel; c.appendChild(tel);
       var st = h('select'); STATUTS.forEach(function (s) { var op = h('option', null, s); if (s === o.statut) op.selected = true; st.appendChild(op); });
       st.onchange = async function () { var r = await sb.from('orders').update({ statut: st.value }).eq('id', o.id).select(); if (r.error || !r.data.length) alert('Mise à jour refusée.'); else { o.statut = st.value; notifyClient(o.id, 'statut', st.value); } };
-      var wb = h('button', 'pill', '💬 Prévenir le client');
+      var wb = h('button', 'pill', '💬 Prévenir le client sur WhatsApp');
       wb.onclick = function () { var t = 'Bonjour ' + o.client_nom + ', ta commande N° ' + String(o.id).slice(0, 6).toUpperCase() + ' ' + statutMsg(o.statut) + '.'; window.open('https://wa.me/' + clientWa(o) + '?text=' + encodeURIComponent(t), '_blank'); };
-      c.append(st, wb); R.appendChild(c);
+      c.append(h('div', 'pd', 'État de la commande (le client le voit en direct) :'), st, h('div', 'pd', 'Prévenir le client par message :'), wb); R.appendChild(c);
     });
   } else if (S.tab === 'annonces') {
     var A = { titre: '', msg: '' }, ap = h('div', 'panel'), am = h('textarea'), ab = h('button', 'go', 'Envoyer à tous les clients');
@@ -389,7 +411,7 @@ function clientWa(o) { var d = String(o.client_tel || '').replace(/\D/g, ''), in
 async function refreshOrders(manual) {
   if (!sb || !mesCmd.length) return;
   var r = await sb.rpc('suivi_commandes', { ids: mesCmd.map(function (o) { return o.id; }) });
-  if (r.error) { if (manual) toast('Actualisation impossible'); return; }
+  if (r.error) { if (manual) alert('Le suivi est indisponible : ' + r.error.message + '\n(Il faut lancer la mise à jour du suivi dans Supabase.)'); return; }
   var changed = false;
   r.data.forEach(function (row) {
     var o = mesCmd.filter(function (x) { return x.id === row.id; })[0]; if (!o) return;
