@@ -4,7 +4,8 @@ var S = { v: 'home', cat: null, q: '', tab: 'produits' }, C = { nom: '', tel: ''
 var cart = {}, loc = null, locErr = '', locBusy = false, orders = [], R = document.getElementById('root');
 try { cart = JSON.parse(localStorage.getItem('cart') || '{}'); } catch (e) {}
 var fav = []; try { fav = JSON.parse(localStorage.getItem('fav') || '[]'); } catch (e) {}
-var mesCmd = []; try { mesCmd = JSON.parse(localStorage.getItem('cmd') || '[]'); } catch (e) {}
+var profile = null, myShop = null, SHOPS = {};
+var mesCmd = [];
 var VAPID_PUBLIC = 'BLcAutFgCPNTB0wyNX99ZPTm67_qyraUZmT-0DjZ-n2LTCXPD1urEsg_BtTSxY97MW3bbxiuUq6D7S4IWJrHM14', pushSub = null;
 var CATALOGUE = [
   ['🍲', 'Nourriture', '#F97316', [['🍽️', 'Plats préparés'], ['🍔', 'Fast-food'], ['🧁', 'Pâtisseries'], ['🥤', 'Boissons'], ['🥬', 'Fruits & légumes'], ['🛒', 'Épicerie']]],
@@ -35,7 +36,8 @@ function toast(t) { var e = document.getElementById('toast'); e.textContent = t;
 function persist() { try { localStorage.setItem('cart', JSON.stringify(cart)); } catch (e) {} }
 function cnt() { var n = 0; D.produits.forEach(function (p) { if (cart[p.id] && !p.out) n += cart[p.id]; }); return n; }
 function sousTotal() { var t = 0; D.produits.forEach(function (p) { if (!p.out) t += (cart[p.id] || 0) * p.prix; }); return t; }
-function fraisLiv() { return sousTotal() ? (Number(D.frais_livraison) || 0) : 0; }
+function nbShops() { var k = {}; D.produits.forEach(function (p) { if (cart[p.id] && !p.out) k[p.shopId || 'none'] = 1; }); return Object.keys(k).length; }
+function fraisLiv() { return sousTotal() ? (Number(D.frais_livraison) || 0) * nbShops() : 0; }
 function total() { return sousTotal() + fraisLiv(); }
 function totalsBox() {
   var w = h('div', 'tots');
@@ -117,7 +119,7 @@ function navbar(title, back) { var n = h('div', 'nav'), b = h('button', 'back', 
 /* ---------- Écrans ---------- */
 function home() {
   if (!sb) R.appendChild(h('div', 'demo', 'Mode démo : renseigne config.js pour activer les vraies données (voir LISEZMOI.md).'));
-  var top = h('div', 'top'), row = h('div', 'brow'), v = h('button', 'vend', user ? 'Espace vendeur' : 'Se connecter'), s = h('input', 'search'), body = h('div');
+  var top = h('div', 'top'), row = h('div', 'brow'), v = h('button', 'vend', user ? 'Mon compte' : 'Se connecter'), s = h('input', 'search'), body = h('div');
   v.onclick = function () { go('me'); }; row.append(h('div', 'brand', 'Marché'), v);
   top.append(row, h('div', 'sub', 'Nourriture, vêtements, objets, accessoires, appareils'), s);
   s.type = 'search'; s.placeholder = 'Que cherchez-vous ?'; s.value = S.q; s.setAttribute('aria-label', 'Rechercher');
@@ -190,6 +192,8 @@ async function load() {
   var p = await sb.from('products').select('*').order('created_at', { ascending: false });
   var s = await sb.from('settings').select('*');
   var c = await sb.from('categories').select('*').order('ordre', { ascending: true });
+  var shq = await sb.from('shops').select('id,nom,statut,telephone,commune,description,livre_lui_meme');
+  if (!shq.error) { SHOPS = {}; shq.data.forEach(function (x) { SHOPS[x.id] = x; }); }
   var sc = await sb.from('subcategories').select('*').order('ordre', { ascending: true });
   if (!c.error && !sc.error) {
     var rows = c.data.filter(function (r) { return r.ordre != null; }).sort(function (x, y) { return x.ordre - y.ordre; });
@@ -205,7 +209,7 @@ async function load() {
   }
   if (!p.error) D.produits = p.data.map(function (r) {
     var im = r.images && r.images.length ? r.images : (r.image_url ? [r.image_url] : []);
-    return { subId: r.subcategory_id || null, catId: r.category_id || null, out: !!r.epuise, id: r.id, nom: r.nom, prix: Number(r.prix), old: r.old_prix ? Number(r.old_prix) : 0, cat: r.categorie, desc: r.description, images: im };
+    return { shopId: r.shop_id || null, subId: r.subcategory_id || null, catId: r.category_id || null, out: !!r.epuise, id: r.id, nom: r.nom, prix: Number(r.prix), old: r.old_prix ? Number(r.old_prix) : 0, cat: r.categorie, desc: r.description, images: im };
   });
   if (!s.error) s.data.forEach(function (r) { D[r.key] = r.value; });
   draw(true);
@@ -256,6 +260,7 @@ async function addProduct(f) {
     urls.push(sb.storage.from('produits').getPublicUrl(path).data.publicUrl);
   }
   var row = { nom: f.nom, prix: f.prix, old_prix: f.old || null, categorie: f.cat, description: f.desc, image_url: urls[0] || null, images: urls };
+  row.shop_id = myShop ? myShop.id : null;
   if (DB2) { row.category_id = f.catId || null; row.subcategory_id = f.subId || null; }
   var r = await sb.from('products').insert(row).select();
   if (r.error || !r.data.length) return alert("Ajout refusé : " + (r.error ? r.error.message : "vérifie que tu es connecté avec le compte vendeur."));
@@ -268,20 +273,6 @@ async function catUpload(blob) {
 }
 
 /* ---------- Commande ---------- */
-async function submitOrder() {
-  if (!C.nom.trim() || !C.tel.trim()) return alert('Indique ton nom et ton numéro de téléphone.');
-  if (!loc && !C.addr.trim()) return alert('Partage ta position pour la livraison.');
-  var pay = (C.pay === 'wave' && waveAvailable()) ? 'wave' : 'especes';
-  var items = D.produits.filter(function (p) { return cart[p.id] && !p.out; }).map(function (p) { return { id: p.id, nom: p.nom, qte: cart[p.id], prix: p.prix }; });
-  if (!items.length) return alert('Ton panier est vide.');
-  var id = (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) { var r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
-  var row = { id: id, client_nom: C.nom.trim(), client_tel: C.tel.trim(), lat: loc ? loc.lat : null, lng: loc ? loc.lng : null, adresse: C.addr.trim() || null, note: C.note.trim() || null, items: items, total: total(), frais: fraisLiv(), paiement: pay };
-  if (sb) { var r = await sb.from('orders').insert(row); if (r.error) return alert('Commande non envoyée : ' + r.error.message); sb.functions.invoke('notify', { body: { type: 'nouvelle', order_id: id } }).catch(function () {}); }
-  var num = id.slice(0, 6).toUpperCase();
-  mesCmd.unshift({ id: id, num: num, total: row.total, date: new Date().toISOString(), statut: 'nouvelle', paiement: pay, paye: false }); saveMy(); linkOrders();
-  S.done = { num: num, pay: pay, total: row.total, wa: waText(items, { num: num, total: row.total, nom: row.client_nom, tel: row.client_tel, lat: row.lat, lng: row.lng, addr: row.adresse, note: row.note }) + '\nPaiement : ' + (pay === 'wave' ? 'Wave' : 'espèces à la livraison') };
-  cart = {}; persist(); go('done');
-}
 
 /* ---------- Composants ---------- */
 function tile(p) {
@@ -327,9 +318,9 @@ function prod() {
   var info = h('div', 'info'), pr = h('div', 'big-price' + (p.old > p.prix ? ' o' : ''), fmt(p.prix));
   if (p.old > p.prix) { pr.appendChild(h('s', null, fmt(p.old))); pr.appendChild(h('span', 'bd2', '-' + Math.round(100 - p.prix * 100 / p.old) + '%')); }
   var hr = h('div', 'brow'); hr.append(h('h2', 'big', p.nom), heart(p)); hr.lastChild.style.position = 'static';
-  info.append(hr, pr, h('p', 'pd', p.cat), h('p', null, p.desc || ''));
-  if (user && sb) { var d = h('button', 'pill', 'Supprimer ce produit'); d.onclick = async function () { if (!confirm('Supprimer « ' + p.nom + ' » ?')) return; var r = await sb.from('products').delete().eq('id', p.id).select(); if (r.error || !r.data.length) return alert('Suppression refusée.'); back(); load(); }; info.appendChild(d); }
-  if (user && sb) info.appendChild(editPanel(p));
+  info.append(hr, pr, h('p', 'pd', p.cat + (SHOPS[p.shopId] ? ' · Vendu par ' + SHOPS[p.shopId].nom : '')), h('p', null, p.desc || ''));
+  if (canEdit(p)) { var d = h('button', 'pill', 'Supprimer ce produit'); d.onclick = async function () { if (!confirm('Supprimer « ' + p.nom + ' » ?')) return; var r = await sb.from('products').delete().eq('id', p.id).select(); if (r.error || !r.data.length) return alert('Suppression refusée.'); back(); load(); }; info.appendChild(d); }
+  if (canEdit(p)) info.appendChild(editPanel(p));
   R.appendChild(info);
   var bar = h('div', 'buy'), a = h('button', 'a', 'Ajouter au panier'), by = h('button', 'b', 'Acheter');
   a.onclick = function () { addCart(p); draw(true); }; by.onclick = function () { addCart(p); go('cart'); };
@@ -351,6 +342,8 @@ function favsV() {
 }
 function checkout() {
   R.appendChild(navbar('Livraison', 'cart'));
+  if (!user) { R.appendChild(loginGate('Connecte-toi ou crée un compte pour passer ta commande. Ton panier est conservé.', 'checkout')); return; }
+  if (profile) { if (!C.nom) C.nom = profile.nom; if (!C.tel) C.tel = profile.telephone; }
   var p = h('div', 'panel');
   p.append(field('Ton nom', C.nom, function (v) { C.nom = v; }), field('Ton téléphone', C.tel, function (v) { C.tel = v; }, 'tel'));
   var b = h('button', 'loc' + (loc ? ' ok' : ''));
@@ -368,19 +361,7 @@ function checkout() {
   R.appendChild(totalsBox());
   var o = h('button', 'fab', 'Confirmer la commande · ' + fmt(total())); o.onclick = submitOrder; R.appendChild(o);
 }
-function done() {
-  R.appendChild(h('div', 'ok-big', '✅'));
-  var n = h('div', 'nav'); n.appendChild(h('h1', null, 'Commande envoyée')); R.appendChild(n);
-  var p = h('div', 'panel'); p.append(h('b', null, 'N° ' + S.done.num), h('span', 'pd', 'Le vendeur a reçu ta commande et ta position. Il te contactera.'));
-  if (S.done.pay === 'wave') {
-    if (D.wave_link) { var w = h('button', 'go wv', 'Payer ' + fmt(S.done.total) + ' avec Wave'); w.onclick = function () { window.open(waveLink(S.done.total), '_blank'); }; p.appendChild(h('span', 'pd', 'Touche le bouton : Wave s\'ouvre avec le montant déjà rempli, il ne reste qu\'à confirmer.')); p.appendChild(w); }
-    else { var cp = h('button', 'go wv', 'Copier le numéro Wave ' + D.wave_num); cp.onclick = function () { try { navigator.clipboard.writeText(D.wave_num); } catch (e) {} toast('Numéro copié'); }; p.appendChild(h('span', 'pd', 'Envoie ' + fmt(S.done.total) + ' par Wave au ' + D.wave_num + '.')); p.appendChild(cp); }
-  } else p.appendChild(h('span', 'pd', 'Tu paieras en espèces à la livraison.'));
-  if (pushSupported() && !pushSub) { var pn = h('button', 'go', '🔔 Être prévenu du suivi de ma commande'); pn.onclick = enablePush; p.appendChild(pn); }
-  if (D.whatsapp) { var wa = h('button', 'go', 'Prévenir le vendeur sur WhatsApp'); wa.onclick = function () { window.open('https://wa.me/' + D.whatsapp + '?text=' + encodeURIComponent(S.done.wa), '_blank'); }; p.appendChild(wa); }
-  var k = h('button', 'go', "Retour à l'accueil"); k.onclick = function () { go('home'); }; p.appendChild(k); R.appendChild(p);
-}
-function me() {
+function dash() {
   var n = h('div', 'nav'); n.appendChild(h('h1', null, 'Espace vendeur')); R.appendChild(n);
   if (!sb) { var d = h('div', 'panel'); d.append(h('b', null, 'Connexion indisponible'), h('span', 'pd', 'Renseigne config.js (voir LISEZMOI.md) pour activer la connexion vendeur.')); R.appendChild(d); return; }
   if (!user) {
@@ -389,9 +370,10 @@ function me() {
     b.onclick = async function () { var r = await sb.auth.signInWithPassword({ email: em.value, password: pw.value }); if (r.error) er.textContent = 'Email ou mot de passe incorrect.'; };
     p.append(h('b', null, 'Connecte-toi pour gérer tes produits et tes commandes'), em, pw, er, b); R.appendChild(p); return;
   }
-  var seg = h('div', 'seg'); [['produits', 'Produits'], ['commandes', 'Commandes'], ['categories', 'Catégories'], ['annonces', 'Annonces'], ['reglages', 'Réglages']].forEach(function (x) {
+  if (!tabsFor().some(function (t) { return t[0] === S.tab; })) S.tab = 'produits';
+  var seg = h('div', 'seg'); tabsFor().forEach(function (x) {
     var b = h('button', null, x[1]); b.setAttribute('aria-pressed', String(S.tab === x[0]));
-    b.onclick = function () { S.tab = x[0]; if (x[0] === 'commandes') loadOrders(); else draw(); }; seg.appendChild(b);
+    b.onclick = function () { S.tab = x[0]; if (x[0] === 'commandes') loadOrders(); else if (x[0] === 'boutiques') loadAdminShops(); else draw(); }; seg.appendChild(b);
   }); R.appendChild(seg);
   if (S.tab === 'produits') {
     var F = { nom: '', prix: '', old: '', cat: CATS[0] ? CATS[0][0] : '', desc: '', blobs: [] }, f = h('div', 'panel'), cs = h('select'), ph = h('input'), ad = h('button', 'go', 'Ajouter le produit');
@@ -424,6 +406,10 @@ function me() {
       wb.onclick = function () { var t = 'Bonjour ' + o.client_nom + ', ta commande N° ' + String(o.id).slice(0, 6).toUpperCase() + ' ' + statutMsg(o.statut) + '.'; window.open('https://wa.me/' + clientWa(o) + '?text=' + encodeURIComponent(t), '_blank'); };
       c.append(h('div', 'pd', 'État de la commande (le client le voit en direct) :'), st, h('div', 'pd', 'Prévenir le client par message :'), wb); R.appendChild(c);
     });
+  } else if (S.tab === 'boutiques') {
+    adminShops();
+  } else if (S.tab === 'boutique') {
+    shopTab();
   } else if (S.tab === 'categories') {
     var ip = h('p', 'pd', "Les catégories sont prédéfinies. Touche une catégorie pour voir ses sous-catégories, puis « Modifier l'image » pour choisir ta photo."); ip.style.padding = '0 16px'; R.appendChild(ip);
     if (!DB2) { var w2 = h('p', 'err', "Pour modifier les images, lance d'abord la mise à jour des catégories dans Supabase."); w2.style.padding = '0 16px'; R.appendChild(w2); }
@@ -481,26 +467,9 @@ function saveMy() { try { localStorage.setItem('cmd', JSON.stringify(mesCmd.slic
 function unseen() { return mesCmd.some(function (o) { return o.unseen; }); }
 function statutMsg(s) { return { 'nouvelle': 'a bien été reçue', 'en préparation': 'est en préparation', 'en livraison': 'est en route', 'livrée': 'a été livrée', 'annulée': 'a été annulée' }[s] || s; }
 function clientWa(o) { var d = String(o.client_tel || '').replace(/\D/g, ''), ind = D.indicatif || '225'; if (d.indexOf('00') === 0) d = d.slice(2); else if (d.indexOf(ind) !== 0) d = ind + d; return d; }
-async function refreshOrders(manual) {
-  if (!sb || !mesCmd.length) return;
-  var r = await sb.rpc('suivi_commandes', { ids: mesCmd.map(function (o) { return o.id; }) });
-  if (r.error) { if (manual) alert('Le suivi est indisponible : ' + r.error.message + '\n(Il faut lancer la mise à jour du suivi dans Supabase.)'); return; }
-  var changed = false;
-  r.data.forEach(function (row) {
-    var o = mesCmd.filter(function (x) { return x.id === row.id; })[0]; if (!o) return;
-    if (o.statut !== row.statut) {
-      o.statut = row.statut; o.unseen = true; changed = true;
-      var m = 'Commande N° ' + o.num + ' : ' + statutMsg(row.statut); toast(m);
-      if ('Notification' in window && Notification.permission === 'granted' && document.hidden) { try { new Notification('Marché', { body: m }); } catch (e) {} }
-    }
-    o.paye = row.paye; o.paiement = row.paiement;
-  });
-  saveMy();
-  if (manual) toast('À jour');
-  if ((changed || manual) && ['checkout', 'me'].indexOf(S.v) === -1) draw(true);
-}
 function ordersV() {
   var n = h('div', 'nav'); n.appendChild(h('h1', null, 'Mes commandes')); R.appendChild(n);
+  if (!user) { R.appendChild(loginGate('Connecte-toi pour voir et suivre tes commandes.')); return; }
   mesCmd.forEach(function (o) { o.unseen = false; }); saveMy();
   var tools = h('div', 'seg'), rf = h('button', null, 'Actualiser'); rf.onclick = function () { refreshOrders(true); }; tools.appendChild(rf);
   if (pushSupported() && !pushSub) { var nb = h('button', null, '🔔 Activer les notifications'); nb.onclick = enablePush; tools.appendChild(nb); }
@@ -517,7 +486,6 @@ function ordersV() {
     c.appendChild(h('div', 'pd', o.paiement === 'wave' ? (o.paye ? 'Paiement Wave : ✅ reçu' : 'Paiement Wave : en attente de confirmation par le vendeur') : (o.paye ? 'Espèces : ✅ encaissé' : 'À payer en espèces à la livraison')));
     R.appendChild(c);
   });
-  var v = h('button', 'pill', 'Espace vendeur'); v.style.margin = '16px'; v.onclick = function () { go('me'); }; R.appendChild(v);
 }
 
 /* ---------- Notifications push ---------- */
@@ -598,7 +566,7 @@ async function enableSellerPush() {
   try {
     var reg = await navigator.serviceWorker.ready;
     var sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(VAPID_PUBLIC) }));
-    var j = sub.toJSON(), r = await sb.from('push_vendeurs').insert({ endpoint: j.endpoint, subscription: j });
+    var j = sub.toJSON(), r = await sb.from('push_vendeurs').insert({ endpoint: j.endpoint, subscription: j, shop_id: myShop ? myShop.id : null });
     if (r.error && r.error.code !== '23505') return alert('Activation refusée : ' + r.error.message);
     try { localStorage.setItem('vend_push', '1'); } catch (e) {}
     toast('Ce téléphone sonnera pour chaque commande ✅'); draw(true);
@@ -642,15 +610,189 @@ function editPanel(p) {
   return w;
 }
 
+/* ---------- Comptes, rôles, boutiques ---------- */
+function isAdmin() { return !!profile && profile.role === 'admin'; }
+function shopActive() { return !!myShop && myShop.statut === 'active'; }
+function canEdit(p) { return !!user && (isAdmin() || (shopActive() && p.shopId === myShop.id)); }
+function shopWa(id) { var x = SHOPS[id], d = x && x.telephone ? String(x.telephone).replace(/\D/g, '') : ''; return d || D.whatsapp || ''; }
+function tabsFor() {
+  var t = [['produits', 'Produits'], ['commandes', 'Commandes']];
+  if (isAdmin()) t.push(['boutiques', 'Boutiques'], ['categories', 'Catégories'], ['annonces', 'Annonces'], ['reglages', 'Réglages']); else t.push(['boutique', 'Ma boutique']);
+  return t;
+}
+async function loadProfile() {
+  var p = await sb.from('profiles').select('*').eq('id', user.id).single(); profile = p.data || null;
+  if (profile) { var q = await sb.from('shops').select('*').eq('owner_id', user.id).maybeSingle(); myShop = q.data || null; }
+}
+async function afterAuth(session) {
+  var uid = session ? session.user.id : null;
+  if (uid && user && user.id === uid && profile) { user = session.user; return; }
+  user = session ? session.user : null; profile = null; myShop = null; mesCmd = [];
+  if (user) await loadProfile();
+  if (user && S.after) { S.v = S.after; S.cat = null; S.after = null; }
+  else if (user && S.v === 'me' && S.tab === 'commandes' && (isAdmin() || shopActive())) loadOrders();
+  draw(true); refreshOrders(false); load();
+}
+function loginGate(msg, after) {
+  var p = h('div', 'panel'), b = h('button', 'go', 'Se connecter ou créer un compte');
+  b.onclick = function () { S.after = after || null; go('me'); };
+  p.append(h('b', null, msg), b); return p;
+}
+function authV() {
+  var mode = S.authMode || 'login', p = h('div', 'panel'), A = { nom: '', tel: '', email: '', pw: '' }, er = h('div', 'err'), info = h('div', 'pd');
+  p.appendChild(h('b', null, mode === 'signup' ? 'Créer un compte' : mode === 'reset' ? 'Mot de passe oublié' : 'Connexion'));
+  if (mode === 'signup') p.append(field('Nom et prénoms', '', function (v) { A.nom = v; }), field('Téléphone (WhatsApp)', '', function (v) { A.tel = v; }, 'tel'));
+  var em = field('Email', '', function (v) { A.email = v; }, 'email'); em.autocomplete = 'username'; p.appendChild(em);
+  if (mode !== 'reset') { var pw = field('Mot de passe (6 caractères minimum)', '', function (v) { A.pw = v; }, 'password'); pw.autocomplete = mode === 'signup' ? 'new-password' : 'current-password'; p.appendChild(pw); }
+  var go1 = h('button', 'go', mode === 'signup' ? 'Créer mon compte' : mode === 'reset' ? 'Envoyer le lien' : 'Se connecter');
+  go1.onclick = async function () {
+    er.textContent = ''; info.textContent = '';
+    if (mode === 'login') { var r = await sb.auth.signInWithPassword({ email: A.email.trim(), password: A.pw }); if (r.error) er.textContent = 'Email ou mot de passe incorrect.'; }
+    else if (mode === 'signup') {
+      if (!A.nom.trim() || !A.tel.trim()) { er.textContent = 'Indique ton nom et ton téléphone.'; return; }
+      if (A.pw.length < 6) { er.textContent = 'Mot de passe : 6 caractères minimum.'; return; }
+      var r2 = await sb.auth.signUp({ email: A.email.trim(), password: A.pw, options: { data: { nom: A.nom.trim(), telephone: A.tel.trim() } } });
+      if (r2.error) er.textContent = r2.error.message; else if (!r2.data.session) info.textContent = 'Compte créé. Vérifie ton e-mail pour confirmer, puis connecte-toi.';
+    } else {
+      var r3 = await sb.auth.resetPasswordForEmail(A.email.trim(), { redirectTo: location.origin + location.pathname });
+      if (r3.error) er.textContent = r3.error.message; else info.textContent = "Si cet e-mail existe, un lien vient d'être envoyé.";
+    }
+  };
+  p.append(er, info, go1);
+  function lk(t, m) { var b = h('button', 'later', t); b.onclick = function () { S.authMode = m; draw(); }; p.appendChild(b); }
+  if (mode === 'login') { lk('Créer un compte', 'signup'); lk('Mot de passe oublié ?', 'reset'); } else lk("J'ai déjà un compte", 'login');
+  R.appendChild(p);
+}
+function recoveryV() {
+  var p = h('div', 'panel'), W = { a: '', b: '' }, er = h('div', 'err'), b = h('button', 'go', 'Enregistrer le nouveau mot de passe');
+  b.onclick = async function () {
+    if (W.a.length < 6) { er.textContent = '6 caractères minimum.'; return; } if (W.a !== W.b) { er.textContent = 'Les deux mots de passe sont différents.'; return; }
+    var r = await sb.auth.updateUser({ password: W.a }); if (r.error) { er.textContent = r.error.message; return; }
+    S.recovery = false; toast('Mot de passe modifié ✅'); draw();
+  };
+  p.append(h('b', null, 'Choisis un nouveau mot de passe'), field('Nouveau mot de passe', '', function (v) { W.a = v; }, 'password'), field('Confirme le mot de passe', '', function (v) { W.b = v; }, 'password'), er, b); R.appendChild(p);
+}
+function accountV() {
+  var P = { nom: profile.nom, tel: profile.telephone }, p = h('div', 'panel'), sv = h('button', 'go', 'Enregistrer'), lo = h('button', 'go', 'Se déconnecter');
+  var rn = { client: 'Client', vendeur: 'Vendeur', livreur: 'Livreur', admin: 'Administrateur' }[profile.role] || profile.role;
+  sv.onclick = async function () { var r = await sb.from('profiles').update({ nom: P.nom.trim(), telephone: P.tel.trim() }).eq('id', user.id).select(); if (r.error || !r.data.length) return alert('Enregistrement refusé.'); profile = r.data[0]; toast('Profil enregistré'); };
+  lo.onclick = function () { sb.auth.signOut(); };
+  p.append(h('b', null, profile.nom || 'Mon profil'), h('span', 'pd', user.email + ' · ' + rn), field('Nom', P.nom, function (v) { P.nom = v; }), field('Téléphone', P.tel, function (v) { P.tel = v; }, 'tel'), sv, lo); R.appendChild(p);
+  if (profile.role === 'livreur') { var lv = h('div', 'panel'); lv.append(h('b', null, 'Espace livreur'), h('span', 'pd', 'Bientôt : la liste des commandes à livrer apparaîtra ici.')); R.appendChild(lv); }
+  var sp = h('div', 'panel');
+  if (myShop) {
+    sp.append(h('b', null, 'Ma boutique : ' + myShop.nom), h('span', 'pd', myShop.statut === 'en_attente' ? "⏳ En attente de validation. Tu seras prévenu dès qu'elle est validée : reviens ici pour vérifier." : '⛔ Boutique suspendue. Contacte l\'administrateur.'));
+  } else if (profile.role === 'client') {
+    var F = { nom: '', tel: profile.telephone || '', commune: '', desc: '', own: false }, ob = h('button', 'pill', 'Je livre moi-même : non'), cb = h('button', 'go', 'Envoyer ma demande');
+    ob.onclick = function () { F.own = !F.own; ob.textContent = 'Je livre moi-même : ' + (F.own ? 'oui' : 'non'); };
+    cb.onclick = async function () {
+      if (!F.nom.trim()) return alert('Écris le nom de ta boutique.');
+      var r = await sb.from('shops').insert({ owner_id: user.id, nom: F.nom.trim(), telephone: F.tel.trim(), commune: F.commune.trim(), description: F.desc.trim(), livre_lui_meme: F.own }).select();
+      if (r.error) return alert('Demande refusée : ' + r.error.message); await loadProfile(); toast('Demande envoyée ✅'); draw(true);
+    };
+    sp.append(h('b', null, 'Devenir vendeur'), h('span', 'pd', 'Crée ta boutique. Elle sera visible après validation par l\'administrateur.'), field('Nom de la boutique', '', function (v) { F.nom = v; }), field('WhatsApp de la boutique', F.tel, function (v) { F.tel = v; }, 'tel'), field('Commune', '', function (v) { F.commune = v; }), field('Description courte', '', function (v) { F.desc = v; }), ob, cb);
+  } else sp = null;
+  if (sp) R.appendChild(sp);
+}
+async function loadAdminShops() {
+  var r = await sb.from('shops').select('*, profiles(nom, telephone)').order('created_at', { ascending: false });
+  S.adminShops = r.data || []; draw(true);
+}
+function adminShops() {
+  var l = S.adminShops || [];
+  if (!l.length) R.appendChild(h('p', 'empty', 'Aucune boutique pour le moment.'));
+  l.forEach(function (x) {
+    var c = h('div', 'ord'), st = { en_attente: '⏳ en attente', active: '✅ active', suspendue: '⛔ suspendue' }[x.statut];
+    c.append(h('b', null, x.nom + ' · ' + st), h('div', null, x.profiles ? x.profiles.nom + ' · ' + x.profiles.telephone : ''), h('div', 'pd', (x.commune || '') + (x.livre_lui_meme ? ' · livre lui-même' : '')), h('div', 'pd', x.description || ''));
+    var act = x.statut === 'active' ? ['Suspendre', 'suspendue'] : [x.statut === 'suspendue' ? 'Réactiver' : 'Valider la boutique', 'active'], b = h('button', 'pill', act[0]);
+    b.onclick = async function () { var r = await sb.from('shops').update({ statut: act[1] }).eq('id', x.id).select(); if (r.error || !r.data.length) return alert('Modification refusée.'); toast('Boutique mise à jour'); loadAdminShops(); load(); };
+    c.appendChild(b); R.appendChild(c);
+  });
+}
+function shopTab() {
+  var X = { nom: myShop.nom, tel: myShop.telephone || '', commune: myShop.commune || '', desc: myShop.description || '', own: !!myShop.livre_lui_meme }, p = h('div', 'panel'), ob = h('button', 'pill', 'Je livre moi-même : ' + (X.own ? 'oui' : 'non')), sv = h('button', 'go', 'Enregistrer la boutique'), lo = h('button', 'go', 'Se déconnecter');
+  ob.onclick = function () { X.own = !X.own; ob.textContent = 'Je livre moi-même : ' + (X.own ? 'oui' : 'non'); };
+  sv.onclick = async function () { var r = await sb.from('shops').update({ nom: X.nom.trim(), telephone: X.tel.trim(), commune: X.commune.trim(), description: X.desc.trim(), livre_lui_meme: X.own }).eq('id', myShop.id).select(); if (r.error || !r.data.length) return alert('Enregistrement refusé.'); myShop = r.data[0]; toast('Boutique enregistrée'); load(); };
+  lo.onclick = function () { sb.auth.signOut(); };
+  p.append(h('b', null, 'Ma boutique'), field('Nom', X.nom, function (v) { X.nom = v; }), field('WhatsApp de la boutique', X.tel, function (v) { X.tel = v; }, 'tel'), field('Commune', X.commune, function (v) { X.commune = v; }), field('Description', X.desc, function (v) { X.desc = v; }), ob, sv, lo);
+  R.appendChild(p); R.appendChild(sellerPushPanel());
+}
+function me() {
+  if (!sb) { var n0 = h('div', 'nav'); n0.appendChild(h('h1', null, 'Mon compte')); R.appendChild(n0); var d = h('div', 'panel'); d.append(h('b', null, 'Connexion indisponible'), h('span', 'pd', 'Renseigne config.js (voir LISEZMOI.md) pour activer les comptes.')); R.appendChild(d); return; }
+  if (user && profile && !S.recovery && (isAdmin() || shopActive())) return dash();
+  var n = h('div', 'nav'); n.appendChild(h('h1', null, 'Mon compte')); R.appendChild(n);
+  if (S.recovery) return recoveryV();
+  if (!user) return authV();
+  if (!profile) { R.appendChild(h('p', 'empty', 'Chargement…')); return; }
+  accountV();
+}
+
+/* ---------- Commande (une commande par boutique) ---------- */
+async function submitOrder() {
+  if (!user) { S.after = 'checkout'; return go('me'); }
+  if (!C.nom.trim() || !C.tel.trim()) return alert('Indique ton nom et ton numéro de téléphone.');
+  if (!loc && !C.addr.trim()) return alert('Partage ta position pour la livraison.');
+  var pay = (C.pay === 'wave' && waveAvailable()) ? 'wave' : 'especes', groups = {};
+  D.produits.forEach(function (p) { if (cart[p.id] && !p.out) (groups[p.shopId || 'none'] = groups[p.shopId || 'none'] || []).push(p); });
+  var keys = Object.keys(groups); if (!keys.length) return alert('Ton panier est vide.');
+  var fee = Number(D.frais_livraison) || 0, made = [], grand = 0;
+  for (var i = 0; i < keys.length; i++) {
+    var items = groups[keys[i]].map(function (p) { return { id: p.id, nom: p.nom, qte: cart[p.id], prix: p.prix }; }), sous = 0;
+    items.forEach(function (x) { sous += x.qte * x.prix; });
+    var id = (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) { var r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
+    var row = { id: id, shop_id: keys[i] === 'none' ? null : keys[i], customer_id: user.id, client_nom: C.nom.trim(), client_tel: C.tel.trim(), lat: loc ? loc.lat : null, lng: loc ? loc.lng : null, adresse: C.addr.trim() || null, note: C.note.trim() || null, items: items, total: sous + fee, frais: fee, paiement: pay };
+    var r = await sb.from('orders').insert(row);
+    if (r.error) { alert('Commande non envoyée : ' + r.error.message + (made.length ? '\n(' + made.length + ' commande(s) déjà envoyée(s))' : '')); break; }
+    sb.functions.invoke('notify', { body: { type: 'nouvelle', order_id: id } }).catch(function () {});
+    var num = id.slice(0, 6).toUpperCase();
+    made.push({ id: id, num: num, total: row.total, shopId: row.shop_id, wa: waText(items, { num: num, total: row.total, nom: row.client_nom, tel: row.client_tel, lat: row.lat, lng: row.lng, addr: row.adresse, note: row.note }) + '\nPaiement : ' + (pay === 'wave' ? 'Wave' : 'espèces à la livraison') });
+    grand += row.total;
+    groups[keys[i]].forEach(function (p) { delete cart[p.id]; }); persist();
+  }
+  if (!made.length) return;
+  S.done = { orders: made, pay: pay, total: grand }; refreshOrders(false); go('done');
+}
+function done() {
+  R.appendChild(h('div', 'ok-big', '✅'));
+  var n = h('div', 'nav'); n.appendChild(h('h1', null, S.done.orders.length > 1 ? 'Commandes envoyées' : 'Commande envoyée')); R.appendChild(n);
+  var p = h('div', 'panel');
+  S.done.orders.forEach(function (o) { var sh = SHOPS[o.shopId]; p.appendChild(h('b', null, 'N° ' + o.num + (sh ? ' · ' + sh.nom : '') + ' · ' + fmt(o.total))); });
+  p.appendChild(h('span', 'pd', 'Les vendeurs ont reçu ta commande et ta position. Ils te contacteront.'));
+  if (S.done.pay === 'wave') {
+    if (D.wave_link) { var w = h('button', 'go wv', 'Payer ' + fmt(S.done.total) + ' avec Wave'); w.onclick = function () { window.open(waveLink(S.done.total), '_blank'); }; p.appendChild(h('span', 'pd', "Touche le bouton : Wave s'ouvre avec le montant déjà rempli, il ne reste qu'à confirmer.")); p.appendChild(w); }
+    else { var cp = h('button', 'go wv', 'Copier le numéro Wave ' + D.wave_num); cp.onclick = function () { try { navigator.clipboard.writeText(D.wave_num); } catch (e) {} toast('Numéro copié'); }; p.appendChild(h('span', 'pd', 'Envoie ' + fmt(S.done.total) + ' par Wave au ' + D.wave_num + '.')); p.appendChild(cp); }
+  } else p.appendChild(h('span', 'pd', 'Tu paieras en espèces à la livraison.'));
+  if (pushSupported() && !pushSub) { var pn = h('button', 'go', '🔔 Être prévenu du suivi de mes commandes'); pn.onclick = enablePush; p.appendChild(pn); }
+  S.done.orders.forEach(function (o) { var wn = shopWa(o.shopId); if (wn) { var sh = SHOPS[o.shopId], wa = h('button', 'go', 'Prévenir ' + (sh ? sh.nom : 'le vendeur') + ' sur WhatsApp'); wa.onclick = function () { window.open('https://wa.me/' + wn + '?text=' + encodeURIComponent(o.wa), '_blank'); }; p.appendChild(wa); } });
+  var k = h('button', 'go', "Retour à l'accueil"); k.onclick = function () { go('home'); }; p.appendChild(k); R.appendChild(p);
+}
+async function refreshOrders(manual) {
+  if (!sb || !user) return;
+  var r = await sb.from('orders').select('id,statut,paiement,paye,total,created_at,shop_id').eq('customer_id', user.id).order('created_at', { ascending: false }).limit(30);
+  if (r.error) { if (manual) toast('Actualisation impossible'); return; }
+  var old = {}, changed = false; mesCmd.forEach(function (o) { old[o.id] = o; });
+  mesCmd = r.data.map(function (row) {
+    var o = old[row.id], unseen = o ? !!o.unseen : false;
+    if (o && o.statut !== row.statut) {
+      unseen = true; changed = true; var m = 'Commande N° ' + row.id.slice(0, 6).toUpperCase() + ' : ' + statutMsg(row.statut); toast(m);
+      if ('Notification' in window && Notification.permission === 'granted' && document.hidden) { try { new Notification('Marché', { body: m }); } catch (e) {} }
+    }
+    return { id: row.id, num: row.id.slice(0, 6).toUpperCase(), total: Number(row.total), date: row.created_at, statut: row.statut, paiement: row.paiement, paye: row.paye, shopId: row.shop_id, pushed: o ? o.pushed : false, unseen: unseen };
+  });
+  if (pushSub) linkOrders();
+  if (manual) toast('À jour');
+  if ((changed || manual) && ['checkout', 'me'].indexOf(S.v) === -1) draw(true);
+}
+
 /* ---------- Démarrage ---------- */
 if (location.hash === '#orders') S.v = 'orders';
 if (location.hash === '#vendeur') { S.v = 'me'; S.tab = 'commandes'; }
 draw();
 if (CFG.SUPABASE_URL && CFG.SUPABASE_ANON_KEY && window.supabase) {
   sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
-  sb.auth.getSession().then(function (r) { user = r.data.session ? r.data.session.user : null; if (user && S.v === 'me' && S.tab === 'commandes') loadOrders(); else draw(true); });
+  sb.auth.getSession().then(function (r) { afterAuth(r.data.session); });
   initPush();
-  sb.auth.onAuthStateChange(function (e, s) { user = s ? s.user : null; if (S.v === 'me') draw(true); });
+  sb.auth.onAuthStateChange(function (e, s) { if (e === 'PASSWORD_RECOVERY') { S.recovery = true; S.v = 'me'; } setTimeout(function () { afterAuth(s); }, 0); });
 }
 load();
 setInterval(function () { if (!document.hidden) refreshOrders(false); }, 30000);
